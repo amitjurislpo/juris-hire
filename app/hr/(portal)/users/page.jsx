@@ -65,7 +65,7 @@ function Users() {
       </tbody></table></div></section>
       <section className="card pad r" style={{ display: "flex", flexDirection: "column", gap: 18 }}><h2>Role permissions</h2>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}><b style={{ color: "var(--gold2)" }}>HR Admin</b><span className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>Everything a reviewer can do, plus hiring drives, imports, question bank, assessment rules, exports and user management.</span></div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 16, borderTop: "1px solid var(--line)" }}><b>HR Reviewer</b><span className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>View candidates, watch videos, rate answers, add notes, change candidate status and resend invitations.</span></div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 16, borderTop: "1px solid var(--line)" }}><b>HR Reviewer</b><span className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>View employees, rate answers, add notes, change candidate status and resend invitations.</span></div>
         <div style={{ paddingTop: 16, borderTop: "1px solid var(--line)", fontSize: 13, lineHeight: 1.6 }} className="muted">Every status change is written to the candidate’s history. Each HR user signs in with their own work email and password.</div>
       </section>
     </div>

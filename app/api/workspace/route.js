@@ -1,126 +1,129 @@
 import { NextResponse } from "next/server";
 import { currentUser, forbidden, unauthorized } from "../../lib/auth";
-import { DEFAULT_SETTINGS, ROLES, SETTING_CHOICES, SETTING_LIMITS, SL, driveOf, makeId, makeToken, planCounts, pushStatus } from "../../lib/domain";
-import { appOrigin, sendInvitation } from "../../lib/email";
+import { AddError, addEmployees } from "../../lib/add-employees";
+import { HR_STATUSES, NEEDS_SUBMISSION, QUESTION_TYPES, ROLES, SL, cleanSettings, driveOf, driveOpen, isEmail, makeId, makeToken, planCounts, pushStatus, today } from "../../lib/domain";
+import { appOrigin, sendInvitations } from "../../lib/email";
 import { MIN_PASSWORD, hashPassword, publicWorkspace } from "../../lib/password";
 import { getWorkspace, logEvent, mutateWorkspace } from "../../lib/workspace-store";
 
 export const runtime = "nodejs";
 
-const ADMIN_OPS = new Set(["createDrive", "updateDrive", "importCandidates", "saveQuestion", "deleteQuestion", "toggleQuestion", "saveSettings", "inviteUser", "setRole", "setPassword", "setQuestions"]);
+// Sending links may also set questions; that part needs an admin (checked in POST).
+const ADMIN_OPS = new Set(["saveDrive", "setDriveStatus", "addEmployee", "saveQuestion", "deleteQuestion", "toggleQuestion", "saveSettings", "inviteUser", "setRole", "setPassword"]);
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 class OpError extends Error {}
 const fail = (message) => { throw new OpError(message); };
 const now = () => new Date().toISOString();
+const text = (v, max = 200) => String(v ?? "").trim().slice(0, max);
 const findCandidate = (ws, id) => ws.candidates.find((c) => c.id === id) || fail("Employee not found.");
+const findDrive = (ws, id) => ws.drives.find((d) => d.id === id) || fail("Drive not found.");
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 // null = draw from the assessment rules; otherwise the exact questions HR picked.
 function cleanQuestionIds(ws, ids) {
   if (ids == null) return null;
-  const valid = [...new Set(ids)].filter((id) => ws.questions.some((q) => q.id === id));
+  if (!Array.isArray(ids)) fail("Select at least one question.");
+  const valid = [...new Set(ids)].filter((id) => ws.questions.some((q) => q.id === id && QUESTION_TYPES.includes(q.type)));
   if (!valid.length) fail("Select at least one question.");
   return valid;
 }
 const checkPassword = (p) => { if (String(p || "").length < MIN_PASSWORD) fail(`Passwords need at least ${MIN_PASSWORD} characters.`); };
 
-function cleanSettings(input) {
-  const s = { ...DEFAULT_SETTINGS };
-  for (const key of Object.keys(DEFAULT_SETTINGS)) {
-    const v = input?.[key];
-    if (SETTING_LIMITS[key]) { const [mn, mx] = SETTING_LIMITS[key]; if (Number.isInteger(v)) s[key] = Math.max(mn, Math.min(mx, v)); }
-    else if (SETTING_CHOICES[key]) { if (SETTING_CHOICES[key].includes(v)) s[key] = v; }
-    else if (typeof v === "boolean") s[key] = v;
-  }
-  return s;
+function checkDriveFields({ name, college, date, closes }) {
+  if (!text(name) || !text(college)) fail("Add a drive name and college.");
+  if (!DATE.test(date || "") || !DATE.test(closes || "")) fail("Choose a session date and a closing date.");
+  if (closes < date) fail("The link must close on or after the session date.");
 }
 
 const OPS = {
   setStatus(ws, me, { ids, to }) {
-    if (!SL[to]) fail("Unknown status.");
-    const list = (ids || []).map((id) => findCandidate(ws, id));
-    list.forEach((c) => pushStatus(c, to, me.name));
-    return `${list.length === 1 ? list[0].name : `${list.length} candidates`} moved to ${SL[to]}.`;
+    if (!HR_STATUSES.includes(to)) fail("That status is set by the assessment itself, not by HR.");
+    const list = (Array.isArray(ids) ? ids : []).map((id) => findCandidate(ws, id));
+    if (!list.length) fail("Select at least one employee.");
+    const eligible = list.filter((c) => c.submittedAt || !NEEDS_SUBMISSION.includes(to));
+    if (!eligible.length) fail(`${SL[to]} needs a submitted assessment.`);
+    eligible.forEach((c) => pushStatus(c, to, me.name));
+    const skipped = list.length - eligible.length;
+    return `${eligible.length === 1 ? eligible[0].name : plural(eligible.length, "employee")} moved to ${SL[to]}.${skipped ? ` ${skipped} skipped — no submitted assessment yet.` : ""}`;
   },
   openReview(ws, me, { id }) {
     const c = findCandidate(ws, id);
-    if (c.status === "completed" && c.submittedAt) pushStatus(c, "review", me.name);
+    if (c.status === "completed") pushStatus(c, "review", me.name);
   },
-  addNote(ws, me, { id, text }) {
-    const t = String(text || "").trim();
+  addNote(ws, me, { id, text: note }) {
+    const t = text(note, 4000);
     if (!t) fail("Write a note first.");
-    findCandidate(ws, id).notes.push({ text: t.slice(0, 4000), by: me.name, at: now() });
+    const c = findCandidate(ws, id);
+    c.notes = [...(c.notes || []), { text: t, by: me.name, at: now() }];
   },
   rate(ws, me, { id, key, value }) {
     const c = findCandidate(ws, id);
-    if (!(value >= 1 && value <= 5)) fail("Ratings run from 1 to 5.");
+    if (!c.written?.some((w) => w.qid === key)) fail("That answer isn’t part of this assessment.");
+    if (!Number.isInteger(value) || value < 1 || value > 5) fail("Ratings run from 1 to 5.");
     c.ratings = { ...(c.ratings || {}), [key]: value };
     if (c.status === "completed") pushStatus(c, "review", me.name);
   },
   allowAttempt(ws, me, { id }) {
     const c = findCandidate(ws, id);
     if (c.status !== "terminated") fail("Only terminated assessments can be reopened.");
+    if (!driveOpen(driveOf(ws, c))) fail("This employee’s drive is closed. Reopen it or extend its closing date first.");
     pushStatus(c, "invited", me.name);
-    Object.assign(c, { tabs: 0, attempt: null, startedAt: null, token: makeToken() });
+    Object.assign(c, { tabs: 0, attempt: null, startedAt: null, endReason: null, inviteSentAt: null, token: makeToken() });
     logEvent(ws, c.id, "start", `New attempt allowed by ${me.name}`);
-    return "A new attempt is allowed with a fresh link.";
+    return "A new attempt is allowed with a fresh link. Send the invitation so the employee gets it.";
   },
-  setQuestions(ws, me, { id, questionIds }) {
-    const c = findCandidate(ws, id);
-    if (c.status !== "invited") fail("Questions can only be changed before the assessment starts.");
-    c.questionIds = cleanQuestionIds(ws, questionIds);
-    return c.questionIds ? `${c.questionIds.length} questions selected for ${c.name}.` : `${c.name} will get questions drawn from the assessment rules.`;
-  },
-  createDrive(ws, me, { name, college, city, date, closes }) {
-    if (!name?.trim() || !college?.trim()) fail("Add a drive name and college.");
-    if (!date || !closes || closes < date) fail("The link must close on or after the session date.");
-    const d = { id: makeId("d"), name: name.trim(), college: college.trim(), city: city?.trim() || "—", date, closes, status: "Draft" };
-    ws.drives.push(d);
-    return d.id;
-  },
-  updateDrive(ws, me, { id, status }) {
-    const d = ws.drives.find((x) => x.id === id) || fail("Drive not found.");
-    if (!["Draft", "Active", "Closed"].includes(status)) fail("Unknown drive status.");
-    d.status = status;
-  },
-  importCandidates(ws, me, { driveId, rows, send, questionIds }) {
-    const d = ws.drives.find((x) => x.id === driveId && x.status !== "Closed") || fail("Choose an open hiring drive.");
-    const picked = cleanQuestionIds(ws, questionIds);
-    const existing = new Set(ws.candidates.map((c) => c.email.toLowerCase()));
-    const created = [];
-    let duplicates = 0;
-    for (const r of rows || []) {
-      const email = String(r.email || "").trim(), name = String(r.name || "").trim();
-      if (!name || !/^\S+@\S+\.\S+$/.test(email)) continue;
-      if (existing.has(email.toLowerCase())) { duplicates++; continue; }
-      existing.add(email.toLowerCase());
-      const c = { id: makeId("c"), name, email, phone: String(r.phone || ""), college: String(r.college || ""), driveId: d.id, status: "invited", token: makeToken(), invitedAt: now(), history: [{ from: null, to: "invited", by: me.name, at: now() }], notes: [], ratings: {}, tabs: 0, questionIds: picked };
-      ws.candidates.push(c);
-      created.push(c.id);
+  saveDrive(ws, me, input) {
+    checkDriveFields(input);
+    const fields = { name: text(input.name), college: text(input.college), city: text(input.city) || "—", date: input.date, closes: input.closes };
+    if (input.id) {
+      Object.assign(findDrive(ws, input.id), fields);
+      return { id: input.id, message: "Drive updated." };
     }
-    if (!created.length) fail(duplicates ? "Every employee in this list has already been added." : "Nothing to add.");
-    if (send && d.status === "Draft") d.status = "Active";
-    return { created, duplicates };
+    if (input.closes < today()) fail("The closing date can’t be in the past.");
+    const d = { id: makeId("d"), ...fields, status: "Draft" };
+    ws.drives.push(d);
+    return { id: d.id, message: `Drive “${d.name}” created. Add employees to send invitations.` };
+  },
+  setDriveStatus(ws, me, { id, status }) {
+    const d = findDrive(ws, id);
+    if (!["Active", "Closed"].includes(status)) fail("Unknown drive status.");
+    if (status === "Active" && d.closes < today()) fail("The closing date has passed. Edit the drive to extend it first.");
+    d.status = status;
+    return status === "Closed" ? "Drive closed — links no longer accept new attempts." : "Drive reopened.";
+  },
+  addEmployee(ws, me, { driveId, employee }) {
+    return addEmployees(ws, me, driveId, [{ row: 1, ...(employee || {}) }]);
   },
   saveQuestion(ws, me, { question: q }) {
-    const text = String(q?.text || "").trim();
-    if (!text) fail("Write the question text.");
-    if (!["mcq", "written", "video"].includes(q.type)) fail("Unknown question type.");
-    const o = { id: q.id, type: q.type, text, cat: String(q.cat || "").trim() || "General", active: q.active !== false };
+    if (!q || !QUESTION_TYPES.includes(q.type)) fail("That question type isn’t available.");
+    const body = text(q.text, 1000);
+    if (!body) fail("Write the question text.");
+    const o = { type: q.type, text: body, cat: text(q.cat, 60) || "General", active: q.active !== false };
     if (q.type === "mcq") {
-      o.options = (q.options || []).map((x) => String(x).trim());
+      o.options = (Array.isArray(q.options) ? q.options : []).map((x) => text(x, 300));
       if (o.options.length !== 4 || o.options.some((x) => !x)) fail("Fill in all four options.");
-      o.correct = Math.max(0, Math.min(3, Number(q.correct) || 0));
+      if (new Set(o.options.map((x) => x.toLowerCase())).size !== 4) fail("Each option needs to be different.");
+      o.correct = Number(q.correct);
+      if (!Number.isInteger(o.correct) || o.correct < 0 || o.correct > 3) fail("Choose the correct option.");
     }
     const existing = q.id && ws.questions.find((x) => x.id === q.id);
-    if (existing) { if (existing.type !== o.type) fail("A question’s type can’t be changed."); Object.assign(existing, o); }
-    else { o.id = makeId(o.type[0]); ws.questions.push(o); }
-    return { message: existing ? "Question updated." : "Question added to the bank.", id: o.id };
+    if (q.id && !existing) fail("Question not found.");
+    if (existing) {
+      if (existing.type !== o.type) fail("A question’s type can’t be changed.");
+      Object.assign(existing, o);
+      return { message: "Question updated.", id: existing.id };
+    }
+    const created = { id: makeId(o.type[0]), ...o };
+    ws.questions.push(created);
+    return { message: "Question added to the bank.", id: created.id };
   },
   deleteQuestion(ws, me, { id }) {
-    // Past answers reference questions by id, so used questions are retired instead of removed.
-    const used = ws.candidates.some((c) => [...(c.mcq || []), ...(c.written || [])].some((a) => a.qid === id) || c.videoQ === id || c.attempt?.qids?.includes(id));
-    if (used) { const q = ws.questions.find((x) => x.id === id); if (q) q.active = false; return "This question has been answered before, so it was deactivated instead of deleted."; }
-    ws.questions = ws.questions.filter((q) => q.id !== id);
+    const q = ws.questions.find((x) => x.id === id) || fail("Question not found.");
+    // Answers, attempts and HR's picks reference questions by id, so referenced questions are retired instead.
+    const used = ws.candidates.some((c) => [...(c.mcq || []), ...(c.written || [])].some((a) => a.qid === id) || c.attempt?.qids?.includes(id) || c.questionIds?.includes(id));
+    if (used) { q.active = false; return "This question is in use, so it was deactivated instead of deleted."; }
+    ws.questions = ws.questions.filter((x) => x.id !== id);
     return "Question deleted.";
   },
   toggleQuestion(ws, me, { id }) {
@@ -131,12 +134,12 @@ const OPS = {
     ws.settings = cleanSettings(settings);
   },
   inviteUser(ws, me, { name, email, role, password }) {
-    const em = String(email || "").trim().toLowerCase();
-    if (!String(name || "").trim() || !/^\S+@\S+\.\S+$/.test(em)) fail("Add a name and a valid email.");
+    const em = text(email, 254).toLowerCase();
+    if (!text(name) || !isEmail(em)) fail("Add a name and a valid email.");
     if (!ROLES.includes(role)) fail("Unknown role.");
     if (ws.users.some((u) => u.email.toLowerCase() === em)) fail("That person already has access.");
     checkPassword(password);
-    ws.users.push({ id: makeId("u"), name: name.trim(), email: em, role, status: "Invited", last: null, passwordHash: hashPassword(password) });
+    ws.users.push({ id: makeId("u"), name: text(name, 120), email: em, role, status: "Invited", last: null, passwordHash: hashPassword(password) });
     return `Access granted to ${em}. Share the portal link and their password with them.`;
   },
   setRole(ws, me, { id, role }) {
@@ -152,22 +155,26 @@ const OPS = {
     u.passwordHash = hashPassword(password);
     return `Password updated for ${u.name}.`;
   },
-  sendInvites() { /* handled below: needs network calls outside the lock */ },
 };
 
-export async function GET() {
+// Emails go out after the database transaction, so a slow mail server never holds the lock.
+async function deliverInvites(request, ids, me, questionIds) {
+  ids = Array.isArray(ids) ? [...new Set(ids)] : [];
+  // Questions are fixed once an attempt starts, so they're only applied to employees who haven't started.
+  if (questionIds !== undefined) await mutateWorkspace((w) => {
+    const picked = cleanQuestionIds(w, questionIds);
+    for (const id of ids) {
+      const c = w.candidates.find((x) => x.id === id);
+      if (c?.status === "invited") c.questionIds = picked;
+    }
+  });
   const ws = await getWorkspace();
-  const me = await currentUser(ws);
-  if (!me) return unauthorized();
-  return NextResponse.json({ workspace: publicWorkspace(ws), me });
-}
-
-async function deliverInvites(request, ids, me) {
-  const ws = await getWorkspace();
-  const targets = ids.map((id) => ws.candidates.find((c) => c.id === id)).filter((c) => c && ["invited", "started"].includes(c.status));
-  const results = await Promise.allSettled(targets.map((c) => sendInvitation({ candidate: c, drive: driveOf(ws, c), settings: { ...ws.settings, ...planCounts(ws, c) }, url: `${appOrigin(request)}/assessment/${c.token}` })));
-  const sent = targets.filter((_, i) => results[i].status === "fulfilled").map((c) => c.id);
-  const failed = results.find((r) => r.status === "rejected");
+  const targets = ids.map((id) => ws.candidates.find((c) => c.id === id))
+    .filter((c) => c && ["invited", "started"].includes(c.status) && driveOpen(driveOf(ws, c)));
+  if (!targets.length) return { sent: 0, attempted: 0, skipped: ids.length, error: ids.length ? "None of the selected employees can receive a link (already submitted, or their drive is closed)." : "Select at least one employee." };
+  const origin = appOrigin(request);
+  const results = await sendInvitations(targets.map((c) => ({ candidate: c, drive: driveOf(ws, c), settings: { ...ws.settings, ...planCounts(ws, c) }, url: `${origin}/assessment/${c.token}` })));
+  const sent = targets.filter((_, i) => results[i].ok).map((c) => c.id);
   if (sent.length) await mutateWorkspace((w) => {
     for (const id of sent) {
       const c = w.candidates.find((x) => x.id === id);
@@ -178,23 +185,36 @@ async function deliverInvites(request, ids, me) {
       if (d?.status === "Draft") d.status = "Active";
     }
   });
-  return { sent: sent.length, attempted: targets.length, error: failed?.reason?.message };
+  return { sent: sent.length, attempted: targets.length, skipped: ids.length - targets.length, error: results.find((r) => !r.ok)?.error || null };
+}
+
+const serverError = (error) => {
+  console.error("Workspace API error:", error);
+  return NextResponse.json({ error: "Something went wrong on our side. Please try again." }, { status: 500 });
+};
+
+export async function GET() {
+  try {
+    const me = await currentUser();
+    if (!me) return unauthorized();
+    return NextResponse.json({ workspace: publicWorkspace(await getWorkspace()), me });
+  } catch (error) { return serverError(error); }
 }
 
 export async function POST(request) {
   const body = await request.json().catch(() => ({}));
-  const me = await currentUser();
-  if (!me) return unauthorized();
-  if (!OPS[body.op]) return NextResponse.json({ error: "Unknown action." }, { status: 400 });
-  if (ADMIN_OPS.has(body.op) && me.role !== "HR Admin") return forbidden();
   try {
-    let result = await mutateWorkspace((ws) => OPS[body.op](ws, me, body) ?? null);
-    let invites = null;
-    if (body.op === "sendInvites") invites = await deliverInvites(request, body.ids || [], me);
-    if (body.op === "importCandidates" && body.send) invites = await deliverInvites(request, result.created, me);
+    const me = await currentUser();
+    if (!me) return unauthorized();
+    if (body.op !== "sendInvites" && !OPS[body.op]) return NextResponse.json({ error: "Unknown action." }, { status: 400 });
+    const admin = me.role === "HR Admin";
+    if ((ADMIN_OPS.has(body.op) || (body.op === "sendInvites" && body.questionIds !== undefined)) && !admin) return forbidden();
+    let result = null, invites = null;
+    if (body.op === "sendInvites") invites = await deliverInvites(request, body.ids, me, body.questionIds);
+    else result = await mutateWorkspace((ws) => OPS[body.op](ws, me, body) ?? null);
     return NextResponse.json({ workspace: publicWorkspace(await getWorkspace()), result, invites });
   } catch (error) {
-    if (error instanceof OpError) return NextResponse.json({ error: error.message }, { status: 400 });
-    throw error;
+    if (error instanceof OpError || error instanceof AddError) return NextResponse.json({ error: error.message }, { status: 400 });
+    return serverError(error);
   }
 }

@@ -7,8 +7,8 @@ import { toCsv } from "../../../lib/domain";
 import { Icon, downloadCSV, fmtDay, pad } from "../../../components/ui";
 import { UI, usePortal } from "../../portal";
 
-const GROUPS = { all: null, tab: ["tab", "terminated"], device: ["device", "eligible", "reconnect"], media: ["perm", "video"], lifecycle: ["start", "submit", "invite"] };
-const TLABEL = { tab: "Tab switch", terminated: "Terminated", device: "Device", eligible: "Eligibility", reconnect: "Reconnect", perm: "Permissions", video: "Video", start: "Lifecycle", submit: "Lifecycle", invite: "Invitation" };
+const GROUPS = { all: null, tab: ["tab", "terminated"], device: ["device", "eligible", "reconnect"], lifecycle: ["start", "submit", "invite"] };
+const TLABEL = { tab: "Tab switch", terminated: "Terminated", device: "Device", eligible: "Eligibility", reconnect: "Reconnect", start: "Lifecycle", submit: "Lifecycle", invite: "Invitation" };
 
 export default function Activity() {
   const { ws, isAdmin, toast } = usePortal();
@@ -32,7 +32,7 @@ export default function Activity() {
       {isAdmin && <div className="acts"><button className="btn" type="button" onClick={exportLog}><Icon name="download" size={16} /> Export log</button></div>}</header>
     <section className="card" style={{ overflow: "hidden" }}>
       <div className="toolbar">
-        <div className="tabs">{[["all", "All"], ["tab", "Tab switches"], ["device", "Device"], ["media", "Camera & video"], ["lifecycle", "Start / submit"]].map((t) => <button key={t[0]} type="button" className={f.type === t[0] ? "on" : ""} aria-pressed={f.type === t[0]} onClick={() => setF({ type: t[0] })}>{t[1]}</button>)}</div>
+        <div className="tabs">{[["all", "All"], ["tab", "Tab switches"], ["device", "Device"], ["lifecycle", "Start / submit"]].map((t) => <button key={t[0]} type="button" className={f.type === t[0] ? "on" : ""} aria-pressed={f.type === t[0]} onClick={() => setF({ type: t[0] })}>{t[1]}</button>)}</div>
         <label className="search"><Icon name="search" size={16} stroke={2} /><span className="sr">Search log</span><input type="search" placeholder="Search candidate or event…" value={f.q} onChange={(e) => setF({ q: e.target.value })} /></label>
       </div>
       <div className="tbl-wrap"><table className="tbl"><thead><tr><th>Time</th><th>Candidate</th><th>Type</th><th>Event</th><th></th></tr></thead><tbody>

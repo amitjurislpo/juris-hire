@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { AWAITING, SL, driveOf, initials, mcqScore } from "../lib/domain";
+import { AWAITING, driveOf, driveStatusLabel, initials, mcqScore } from "../lib/domain";
 import { Icon, Pill, fmtDay, useToast } from "../components/ui";
 
 const PortalCtx = createContext(null);
@@ -26,7 +26,13 @@ export function PortalProvider({ children }) {
       setState(await r.json());
     } catch { setError("The HR workspace couldn’t be loaded. Check your connection and refresh."); }
   }, [router]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    // Pick up changes made by other HR users when the tab comes back into focus.
+    const onFocus = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onFocus);
+    return () => document.removeEventListener("visibilitychange", onFocus);
+  }, [load]);
 
   const op = useCallback(async (name, payload = {}) => {
     try {
@@ -35,15 +41,17 @@ export function PortalProvider({ children }) {
       if (r.status === 401) { router.replace("/hr/login"); return null; }
       if (!r.ok) { toast(body.error || "That change couldn’t be saved."); return null; }
       setState((s) => ({ ...s, workspace: body.workspace }));
-      if (body.invites?.error) toast(`${body.invites.sent} of ${body.invites.attempted} emails sent. ${body.invites.error}`);
+      if (body.invites?.error) toast(`${body.invites.sent} of ${body.invites.attempted + body.invites.skipped} invitations sent. ${body.invites.error}`);
       return body;
     } catch { toast("That change couldn’t be saved. Check your connection and try again."); return null; }
   }, [router, toast]);
 
+  const setWorkspace = (workspace) => setState((s) => ({ ...s, workspace }));
+
   if (error) return <div className="hr"><main className="main"><div className="empty">{error}</div></main></div>;
   if (!state) return <div className="hr"><main className="main"><div className="empty">Loading the HR workspace…</div></main></div>;
   const isAdmin = state.me.role === "HR Admin";
-  return <PortalCtx.Provider value={{ ws: state.workspace, me: state.me, isAdmin, op, reload: load, toast }}>{children}</PortalCtx.Provider>;
+  return <PortalCtx.Provider value={{ ws: state.workspace, me: state.me, isAdmin, op, toast, setWorkspace }}>{children}</PortalCtx.Provider>;
 }
 
 const NAV = [
@@ -58,7 +66,7 @@ export function Shell({ children }) {
   const path = usePathname();
   const section = path.split("/")[2] || "";
   const awaiting = ws.candidates.filter((c) => AWAITING.includes(c.status)).length;
-  const signOut = async () => { await fetch("/api/session", { method: "DELETE" }); router.replace("/hr/login"); };
+  const signOut = async () => { await fetch("/api/session", { method: "DELETE" }).catch(() => {}); router.replace("/hr/login"); };
   return <div className="hr">
     <aside className="side">
       <div className="brand"><div className="mark">J</div><div><b>Juris Consultants</b><small>Talent screening</small></div></div>
@@ -97,7 +105,7 @@ export function CandRow({ c, check, checked, onCheck }) {
   const href = `/hr/candidates/${c.id}`;
   return <tr className="click" onClick={() => router.push(href)}>
     {check && <td style={{ width: 44 }} onClick={(e) => e.stopPropagation()}><input type="checkbox" className="check" checked={checked} onChange={(e) => onCheck(e.target.checked)} aria-label={`Select ${c.name}`} /></td>}
-    <td><div className="who"><span className="avatar">{initials(c.name)}</span><div><b>{c.name}{c.sample && <span className="pill st-hold" style={{ marginLeft: 6 }}>Sample</span>}</b><small>{c.email}</small></div></div></td>
+    <td><div className="who"><span className="avatar">{initials(c.name)}</span><div><b>{c.name}</b><small>{c.email}</small></div></div></td>
     <td style={{ color: "var(--soft)" }}>{c.college || d.college}<br /><small className="muted">{d.name}</small></td>
     <td>{c.mcq ? <><b>{mcqScore(ws, c)}</b><span className="muted"> / {c.mcq.length}</span></> : <span className="muted">—</span>}</td>
     <td>{c.tabs ? <span className="flag"><Icon name="warn" size={14} stroke={2} />{c.tabs} tab{c.tabs > 1 ? "s" : ""}</span> : <span className="muted">None</span>}</td>
@@ -107,5 +115,8 @@ export function CandRow({ c, check, checked, onCheck }) {
   </tr>;
 }
 
-export const statusLabel = (s) => SL[s] || s;
-export const driveTone = (s) => (s === "Active" ? "st-completed" : s === "Draft" ? "st-review" : "st-hold");
+const DRIVE_TONE = { Active: "st-completed", Draft: "st-review", Expired: "st-rejected", Closed: "st-hold" };
+export function DriveBadge({ drive }) {
+  const label = driveStatusLabel(drive);
+  return <span className={`pill ${DRIVE_TONE[label]}`}>{label}</span>;
+}

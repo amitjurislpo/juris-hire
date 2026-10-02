@@ -4,8 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { stats } from "../../../lib/domain";
 import { Icon, fmtDate } from "../../../components/ui";
-import { driveTone, usePortal } from "../../portal";
-import { NewDriveModal } from "../../modals";
+import { DriveBadge, usePortal } from "../../portal";
+import { DriveModal } from "../../modals";
 
 
 export default function Drives() {
@@ -17,13 +17,13 @@ export default function Drives() {
     <div className="drives">{ws.drives.map((d) => {
       const l = ws.candidates.filter((c) => c.driveId === d.id), s = stats(ws, l), p = l.length ? Math.round((s.submitted / l.length) * 100) : 0;
       return <Link key={d.id} className="card drive" href={`/hr/drives/${d.id}`} style={{ textDecoration: "none" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span className="eyebrow">{d.college}</span><span className={`pill ${driveTone(d.status)}`}>{d.status}</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span className="eyebrow">{d.college}</span><DriveBadge drive={d} /></div>
         <h3>{d.name}</h3>
         <span className="muted" style={{ fontSize: 13 }}>Session {fmtDate(d.date)} · closes {fmtDate(d.closes)}</span>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}><span className="muted">Completion</span><b>{p}%</b></div><div className="prog"><div style={{ width: `${p}%` }} /></div></div>
         <div className="stats3"><div><b>{l.length}</b><span>Invited</span></div><div><b>{s.awaiting}</b><span>To review</span></div><div><b>{s.shortlisted}</b><span>Shortlisted</span></div></div>
       </Link>;
     })}</div>
-    {open && <NewDriveModal onClose={() => setOpen(false)} />}
+    {open && <DriveModal onClose={() => setOpen(false)} />}
   </>;
 }
