@@ -1,38 +1,35 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { getWorkspace, saveWorkspace } from "../../../../lib/workspace-store";
+import { qById } from "../../../../lib/domain";
+import { logEvent, mutateWorkspace, videoPath } from "../../../../lib/workspace-store";
 
 export const runtime = "nodejs";
 
+const MAX_BYTES = 25 * 1024 * 1024;
+
 export async function POST(request, { params }) {
   const { token } = await params;
-  const workspace = await getWorkspace();
-  const candidate = workspace.candidates.find((item) => item.inviteToken === token);
-  if (!candidate || !candidate.questionIds.some((id) => workspace.questions.find((question) => question.id === id)?.type === "video")) {
-    return NextResponse.json({ error: "Video response is not available." }, { status: 404 });
-  }
   const bytes = Buffer.from(await request.arrayBuffer());
-  if (!bytes.length || bytes.length > 10 * 1024 * 1024) return NextResponse.json({ error: "Video must be under 10 MB." }, { status: 413 });
-  const videoDirectory = path.join(process.cwd(), "data", "videos");
-  await mkdir(videoDirectory, { recursive: true });
-  const videoPath = path.join(videoDirectory, `${candidate.id}.webm`);
-  await writeFile(videoPath, bytes);
-  candidate.videoRecorded = true;
-  candidate.videoDuration = Math.min(15, Math.max(1, Number(request.headers.get("x-recording-seconds") || 15)));
-  await saveWorkspace(workspace);
-  return NextResponse.json({ saved: true });
-}
+  if (!bytes.length || bytes.length > MAX_BYTES) return NextResponse.json({ error: "The recording must be under 25 MB." }, { status: 413 });
+  const mime = /^video\/(webm|mp4)/.test(request.headers.get("content-type") || "") ? request.headers.get("content-type").split(";")[0] : "video/webm";
 
-export async function GET(_request, { params }) {
-  const { token } = await params;
-  const workspace = await getWorkspace();
-  const candidate = workspace.candidates.find((item) => item.inviteToken === token);
-  if (!candidate || !candidate.videoRecorded) return NextResponse.json({ error: "No video response is available." }, { status: 404 });
-  try {
-    const bytes = await readFile(path.join(process.cwd(), "data", "videos", `${candidate.id}.webm`));
-    return new Response(bytes, { headers: { "Content-Type": "video/webm", "Content-Length": String(bytes.length), "Cache-Control": "no-store" } });
-  } catch {
-    return NextResponse.json({ error: "Video file is unavailable." }, { status: 404 });
-  }
+  const result = await mutateWorkspace(async (ws) => {
+    const c = ws.candidates.find((x) => x.token === token);
+    const a = c?.attempt;
+    if (!c || c.status !== "started" || !a) return { error: "This assessment is no longer open.", status: 409 };
+    const vq = a.qids.map((id) => qById(ws, id)).find((q) => q?.type === "video");
+    if (!vq) return { error: "There is no video question in this assessment.", status: 404 };
+    if ((a.videoTakes || 0) > a.settings.retakes) return { error: "No retakes left.", status: 409 };
+    const dur = Math.max(1, Math.min(a.settings.videoMax, Math.round(Number(request.headers.get("x-recording-seconds")) || a.settings.videoMax)));
+    const file = videoPath(c.id);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, bytes);
+    a.videoTakes = (a.videoTakes || 0) + 1;
+    a.answers[vq.id] = { dur };
+    c.videoMime = mime;
+    logEvent(ws, c.id, "video", `Video recorded · ${dur}s${a.videoTakes > 1 ? ` (take ${a.videoTakes})` : ""}${request.headers.get("x-auto-stopped") ? " · auto-stopped at limit" : ""}`);
+    return { saved: true, dur, videoTakes: a.videoTakes };
+  });
+  return NextResponse.json(result, { status: result.status || 200 });
 }
