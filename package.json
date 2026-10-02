@@ -8,6 +8,7 @@
     "start": "next start -p 3004"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
     "lucide-react": "^0.468.0",
     "next": "^15.1.0",
     "pg": "^8.23.0",
@@ -20,6 +21,7 @@
     "typescript": "^5.7.2"
   },
   "overrides": {
-    "postcss": "^8.5.28"
+    "postcss": "^8.5.28",
+    "uuid": "^11.1.1"
   }
 }

@@ -30,11 +30,11 @@ export default function LoginPage() {
     <section className="login-art">
       <div className="brand"><div className="mark">J</div><div><b>Juris Consultants</b><small>Talent screening</small></div></div>
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <span className="eyebrow">College hiring · HR portal</span>
+        <span className="eyebrow">Legal process outsourcing · HR portal</span>
         <h1>Interview the <i>right</i> people, not everyone.</h1>
-        <p style={{ color: "var(--muted)", fontSize: 16, lineHeight: 1.6, maxWidth: "46ch" }}>Structured first-round screening — multiple choice, written and video responses, reviewed in one place.</p>
+        <p style={{ color: "var(--muted)", fontSize: 16, lineHeight: 1.6, maxWidth: "46ch" }}>Structured first-round screening for legal process outsourcing roles — multiple-choice and written responses, reviewed in one place.</p>
       </div>
-      <span className="mono" style={{ fontSize: 12, color: "#6B7487" }}>Authorised HR users only · all access is logged</span>
+      <span className="mono" style={{ fontSize: 12, color: "var(--ink-faint)" }}>Authorised HR users only · all access is logged</span>
     </section>
     <section className="login-form"><form className="login-card" onSubmit={submit} noValidate>
       <div><h2 className="serif" style={{ fontSize: 40, lineHeight: "44px" }}>Sign in</h2><p className="muted" style={{ fontSize: 14, marginTop: 6 }}>Use your Juris Consultants work account.</p></div>
