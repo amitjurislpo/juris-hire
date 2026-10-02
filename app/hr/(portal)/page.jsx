@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { AWAITING, stats } from "../../lib/domain";
+import { AWAITING, driveOpen, stats } from "../../lib/domain";
 import { Icon, fmtDate, fmtT } from "../../components/ui";
 import { CandHead, CandRow, usePortal } from "../portal";
-import { AddEmployeesModal, NewDriveModal } from "../modals";
+import { AddEmployeesModal, DriveModal } from "../modals";
 
 export default function Dashboard() {
   const { ws, me, isAdmin } = usePortal();
@@ -13,16 +13,16 @@ export default function Dashboard() {
   const s = stats(ws, ws.candidates);
   const pct = s.invited ? Math.round((s.submitted / s.invited) * 100) : 0;
   const segs = [
-    ["Not started", s.notStarted, "#3A4458"], ["In progress", s.started, "#5C7FB8"], ["Awaiting review", s.awaiting, "#8C7A4E"],
-    ["Shortlisted / interview / selected", s.shortlisted, "#F0E3C0"], ["Rejected", s.rejected, "#B5684A"], ["On hold", s.hold, "#6B7487"], ["Terminated", s.terminated, "#7A3A33"],
+    ["Not started", s.notStarted, "#D3CCBE"], ["In progress", s.started, "#7F95B5"], ["Awaiting review", s.awaiting, "#B8955F"],
+    ["Shortlisted / interview / selected", s.shortlisted, "#1F4D3F"], ["Rejected", s.rejected, "#B76E5A"], ["On hold", s.hold, "#9A9EA6"], ["Terminated", s.terminated, "#7E241C"],
   ];
   const awaiting = ws.candidates.filter((c) => AWAITING.includes(c.status)).sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt)).slice(0, 6);
   const recent = [...ws.events].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 8);
-  const active = ws.drives.filter((d) => d.status === "Active");
+  const active = ws.drives.filter((d) => d.status === "Active" && driveOpen(d));
   const hr = new Date().getHours();
 
   return <>
-    <header className="ph"><div style={{ display: "flex", flexDirection: "column", gap: 8 }}><span className="eyebrow">Sales team · College hiring</span><h1>Good {hr < 12 ? "morning" : hr < 17 ? "afternoon" : "evening"}, {me.name.split(" ")[0]}</h1></div>
+    <header className="ph"><div style={{ display: "flex", flexDirection: "column", gap: 8 }}><span className="eyebrow">Legal process outsourcing · Hiring</span><h1>Good {hr < 12 ? "morning" : hr < 17 ? "afternoon" : "evening"}, {me.name.split(" ")[0]}</h1></div>
       {isAdmin && <div className="acts"><button className="btn" type="button" onClick={() => setModal("import")}><Icon name="plus" size={16} /> Add employees</button><button className="btn gold" type="button" onClick={() => setModal("drive")}><Icon name="plus" size={16} /> New hiring drive</button></div>}</header>
     <section className="kpis" aria-label="Key figures">
       <div className="card kpi"><span>Invited</span><b className="n">{s.invited}</b><span>across {active.length} active drive{active.length !== 1 ? "s" : ""}</span></div>
@@ -53,7 +53,7 @@ export default function Dashboard() {
           {recent.map((e) => { const c = ws.candidates.find((x) => x.id === e.cid); return <div key={e.id} className={e.warn ? "w" : ""}><span className="t">{fmtT(e.at)}</span><span><b style={{ color: "var(--text)" }}>{c ? c.name : "—"}</b><br />{e.text}</span></div>; })}
         </div></section>
     </div>
-    {modal === "drive" && <NewDriveModal onClose={() => setModal("")} />}
+    {modal === "drive" && <DriveModal onClose={() => setModal("")} />}
     {modal === "import" && <AddEmployeesModal onClose={() => setModal("")} />}
   </>;
 }
